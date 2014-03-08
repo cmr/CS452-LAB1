@@ -1,23 +1,21 @@
+#[crate_id = "triangle"];
 #[no_uv];
-extern mod gl;
-extern mod hgl;
-extern mod glfw;
-extern mod extra;
-extern mod native;
+
+extern crate native;
+
+extern crate gl;
+extern crate hgl;
+extern crate glfw = "glfw-rs";
 
 use std::mem::size_of;
 use std::rand::Rng;
 use std::iter::AdditiveIterator;
 
-use hgl::{Shader, Program, Triangles, Vbo, Vao};
 use gl::types::GLint;
-use glfw::{Window, MouseButton, Action, Modifiers};
-
-#[link(name="glfw")]
-extern {}
+use hgl::{Shader, Program, Triangles, Vbo, Vao};
 
 static VERTEX_SHADER: &'static str = "
-#version 330
+#version 140
 
 in vec2 position;
 in vec3 color;
@@ -34,15 +32,13 @@ void main() {
 }";
 
 static FRAGMENT_SHADER: &'static str = "
-#version 330
+#version 140
 out vec4 out_color;
 in vec3 Color;
 
 void main() {
     out_color = vec4(Color, 1.0);
 }";
-
-static mut TO_DRAW: ShapeToDraw = Triangle;
 
 #[deriving(Eq)]
 enum ShapeToDraw {
@@ -65,90 +61,92 @@ static TRIANGLE_DATA: &'static [f32] = &[0.0, 0.5, 1.0, 0.0, 0.0,
                                          0.5,-0.5, 0.0, 1.0, 0.0,
                                         -0.5,-0.5, 0.0, 0.0, 1.0];
 
-struct MouseButtonCallback;
-
-impl glfw::MouseButtonCallback for MouseButtonCallback {
-    fn call(&self, _window: &Window, button: MouseButton, action: Action, _modifiers: Modifiers) {
-        if button == glfw::MouseButtonLeft && action == glfw::Release {
-            unsafe {
-                TO_DRAW = match TO_DRAW {
-                    Triangle => SierpinskiPoints,
-                    SierpinskiPoints => RandomLines,
-                    RandomLines => Triangle
-                }
-            }
-        }
-    }
-}
-
 #[start]
 fn main(argc: int, argv: **u8) -> int {
     native::start(argc, argv, proc() {
-        glfw::set_error_callback(~glfw::LogErrorHandler);
+        glfw::set_error_callback(box glfw::LogErrorHandler);
         glfw::start(proc() {
-            glfw::window_hint::context_version(3, 3);
-            glfw::window_hint::opengl_profile(glfw::OpenGlCoreProfile);
-            let window = glfw::Window::create(800, 600, "HGL", glfw::Windowed).unwrap();
-            window.set_mouse_button_callback(~MouseButtonCallback);
+            glfw::window_hint::context_version(3, 1);
+            // glfw::window_hint::opengl_profile(glfw::OpenGlCoreProfile);
+            let window = glfw::Window::create(800, 600, "Lab 1", glfw::Windowed).unwrap();
+            window.set_mouse_button_polling(true);
             window.make_context_current();
             gl::load_with(glfw::get_proc_address);
 
             gl::Viewport(0, 0, 800, 600);
+            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
 
             // this could be a *lot* more efficient if it made smarter use of
             // VAOs
 
             let vao = Vao::new();
-            vao.activate();
+            vao.bind();
             let program = Program::link([Shader::compile(VERTEX_SHADER, hgl::VertexShader).unwrap(),
                                          Shader::compile(FRAGMENT_SHADER, hgl::FragmentShader).unwrap()]).unwrap();
             program.bind_frag(0, "out_color");
-            program.activate();
+            program.bind();
 
             let mut rng = std::rand::task_rng();
+            let mut to_draw = Triangle;
 
-            let tri_vbo = Vbo::from_data(TRIANGLE_DATA, hgl::StaticDraw).unwrap();
+
+            let tri_vbo = Vbo::from_data(TRIANGLE_DATA, hgl::buffer::StaticDraw);
             let mut sierp_vbo;
             let mut line_vbo;
 
             let mut previous = RandomLines;
             let mut num_indices: GLint = 3; // default for triangle
 
-            let cgen: || -> f32 = || rng.gen_range(-1.0f32, 1.0);
-
             while !window.should_close() {
                 glfw::poll_events();
-                gl::ClearColor(0.0, 0.0, 0.0, 1.0);
+
+                for (_, event) in window.flush_events() {
+                    match event {
+                        glfw::MouseButtonEvent(glfw::MouseButtonLeft, glfw::Release, _) => {
+                            // Cycle the thing forward
+                            to_draw = match to_draw {
+                                Triangle => SierpinskiPoints,
+                                SierpinskiPoints => RandomLines,
+                                RandomLines => Triangle
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+
                 gl::Clear(gl::COLOR_BUFFER_BIT);
-                if previous != unsafe { TO_DRAW } {
-                    match unsafe { TO_DRAW } {
+
+                if previous != to_draw {
+                    match to_draw {
                         Triangle => {
-                            tri_vbo.activate();
-                            vao.enable_attrib(&program, "position", 2, 5*size_of::<f32>() as i32, 0);
-                            vao.enable_attrib(&program, "color", 3, 5*size_of::<f32>() as i32, 2*size_of::<f32>());
+                            tri_vbo.bind();
+                            vao.enable_attrib(&program, "position", gl::FLOAT, 2, 5*size_of::<f32>() as i32, 0);
+                            vao.enable_attrib(&program, "color", gl::FLOAT, 3, 5*size_of::<f32>() as i32, 2*size_of::<f32>());
                             num_indices = 3;
                         },
                         SierpinskiPoints => {
                             gl::Uniform3f(program.uniform("const_color"), 0.0, 1.0, 0.0);
-                            let points = sierpinski([(0.0, 0.5), (0.5, -0.5), (-0.5, -0.5)],
-                                                    rng.gen_range(1500u, 30000), rng);
-                            sierp_vbo = Vbo::from_data(points, hgl::StreamDraw).unwrap();
-                            sierp_vbo.activate();
-                            vao.enable_attrib(&program, "position", 2, 0, 0);
+                            let r = rng.gen_range(1500u, 30000);
+                            let points = sierpinski([(0.0, 0.5), (0.5, -0.5), (-0.5, -0.5)], r, rng);
+                            sierp_vbo = Vbo::from_data(points, hgl::buffer::StreamDraw);
+                            sierp_vbo.bind();
+                            vao.enable_attrib(&program, "position", gl::FLOAT, 2, 0, 0);
                             num_indices = points.len() as GLint;
                         },
                         RandomLines => {
+                            let cgen: || -> f32 = || rng.gen_range(-1.0f32, 1.0);
+
                             gl::Uniform3f(program.uniform("const_color"), 0.0, 0.0, 0.0);
-                            let points = std::vec::from_fn(rng.gen_range(36u, 300),
-                                |_| (cgen(), cgen(), cgen(), cgen(), cgen()));
-                            line_vbo = Vbo::from_data::<(f32, f32, f32, f32, f32)>(points, hgl::StreamDraw).unwrap();
-                            line_vbo.activate();
-                            vao.enable_attrib(&program, "position", 2, 5*size_of::<f32>() as i32, 0);
-                            vao.enable_attrib(&program, "color", 3, 5*size_of::<f32>() as i32, 2*size_of::<f32>());
+                            let points = std::vec::from_fn(3, |_| (cgen(), cgen(), cgen(), cgen(), cgen()));
+                            line_vbo = Vbo::from_data::<(f32, f32, f32, f32, f32)>(points, hgl::buffer::StreamDraw);
+                            line_vbo.bind();
+                            vao.enable_attrib(&program, "position", gl::FLOAT, 2, 5*size_of::<f32>() as i32, 0);
+                            vao.enable_attrib(&program, "color", gl::FLOAT, 3, 5*size_of::<f32>() as i32, 2*size_of::<f32>());
                             num_indices = points.len() as GLint;
+                            drop(cgen);
                         }
                     }
-                    previous = unsafe { TO_DRAW }
+                    previous = to_draw;
                 }
                 vao.draw_array(previous.to_prim(), 0, num_indices);
                 window.swap_buffers();
@@ -182,27 +180,27 @@ fn sierpinski<R: Rng>(vertices: [(f32, f32), ..3], iterations: uint, mut rng: R)
 
 fn in_triangle(vertices: [(f32, f32), ..3], point: (f32, f32)) -> bool {
     // jeez...
-    let midpoint = (vertices.iter().map(|t| t.n0()).sum() / 3.0, vertices.iter().map(|t| t.n1()).sum() / 3.0);
+    let midpoint = (vertices.iter().map(|t| t.val0()).sum() / 3.0, vertices.iter().map(|t| t.val1()).sum() / 3.0);
     let ab: |f32| -> (f32, f32) = |x| {
         let (a, b) = (vertices[0], vertices[1]);
-        (x, ((b.n1() - a.n1()) / (b.n0() - a.n0()) * (x - b.n0())) - b.n1())
+        (x, ((b.val1() - a.val1()) / (b.val0() - a.val0()) * (x - b.val0())) - b.val1())
     };
     let ac: |f32| -> (f32, f32) = |x| {
         let (a, b) = (vertices[0], vertices[2]);
-        (x, ((b.n1() - a.n1()) / (b.n0() - a.n0()) * (x - b.n0())) - b.n1())
+        (x, ((b.val1() - a.val1()) / (b.val0() - a.val0()) * (x - b.val0())) - b.val1())
     };
     let bc: |f32| -> (f32, f32) = |x| {
         let (a, b) = (vertices[1], vertices[2]);
-        (x, ((b.n1() - a.n1()) / (b.n0() - a.n0()) * (x - b.n0())) - b.n1())
+        (x, ((b.val1() - a.val1()) / (b.val0() - a.val0()) * (x - b.val0())) - b.val1())
     };
 
-    let dirab = midpoint < ab(midpoint.n0());
-    let dirac = midpoint < ac(midpoint.n0());
-    let dirbc = midpoint < bc(midpoint.n0());
+    let dirab = midpoint < ab(midpoint.val0());
+    let dirac = midpoint < ac(midpoint.val0());
+    let dirbc = midpoint < bc(midpoint.val0());
 
-    if     ((point < ab(point.n0())) == dirab)
-        && ((point < ac(point.n0())) == dirac)
-        && ((point < bc(point.n0())) == dirbc)
+    if     ((point < ab(point.val0())) == dirab)
+        && ((point < ac(point.val0())) == dirac)
+        && ((point < bc(point.val0())) == dirbc)
     {
         true
     } else {
